@@ -28,6 +28,8 @@
   progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
   progress::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
   button { font: inherit; font-size: .8125rem; font-weight: 510; border: 1px solid var(--border-control); border-radius: 6px; padding: .6rem .75rem; background: var(--control); color: var(--text); cursor: pointer; min-height: 2.25rem; box-shadow: 0 1px 2px #0003; }
+  .shortcut-button { display: flex; align-items: center; justify-content: center; gap: .5rem; }
+  kbd { font: inherit; font-size: .6875rem; line-height: 1.3; padding: .1rem .3rem; border: 1px solid currentColor; border-radius: 3px; opacity: .8; }
   button:hover { background: var(--hover); }
   button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #8b94ed; outline-offset: 3px; }
   button:disabled { opacity: .45; cursor: default; }
@@ -64,8 +66,8 @@
     <input id="interval" type="number" min="1" max="3600" step="1" value="20" required>
     <button type="submit">Apply</button>
   </form>
-  <button id="toggle" disabled>Start</button>
-  <div class="row"><button data-action="previous">← Previous</button><button data-action="next">Next →</button></div>
+  <button id="toggle" class="shortcut-button" aria-keyshortcuts="Space" title="Start (Space)" disabled><span id="toggle-label">Start</span><kbd aria-hidden="true">Space</kbd></button>
+  <div class="row"><button data-action="previous" class="shortcut-button" aria-keyshortcuts="ArrowLeft" title="Previous slide (←)">Previous <kbd aria-hidden="true">←</kbd></button><button data-action="next" class="shortcut-button" aria-keyshortcuts="ArrowRight" title="Next slide (→)">Next <kbd aria-hidden="true">→</kbd></button></div>
   <div class="row"><button data-action="first">First slide</button></div>
   <details id="deck-picker">
     <summary>Change deck</summary>
@@ -111,7 +113,9 @@
     drawTime();
     const stateLabel = !s.connected ? 'Choose a deck' : s.running ? 'Running' : s.remaining === 0 ? 'Finished' : 'Paused';
     if (el('state').textContent !== stateLabel) el('state').textContent = stateLabel;
-    el('toggle').textContent = s.running ? 'Pause' : s.remaining > 0 && s.remaining < interval ? 'Resume' : 'Start';
+    const toggleLabel = s.running ? 'Pause' : s.remaining > 0 && s.remaining < interval ? 'Resume' : 'Start';
+    el('toggle-label').textContent = toggleLabel;
+    el('toggle').title = `${toggleLabel} (Space)`;
     el('error').textContent = s.error;
     el('toggle').disabled = !s.connected;
     document.querySelectorAll('[data-action]').forEach(b => b.disabled = !s.connected);
@@ -146,7 +150,7 @@
     }
     try {
       const r = await fetch(action ? `/${action}` : '/state', { method: action ? 'POST' : 'GET', headers: {'X-Pitch-Token': token, 'Content-Type': 'application/json'}, body: payload ? JSON.stringify(payload) : undefined, signal: AbortSignal.timeout(action === 'connect' ? 45000 : 15000) });
-      if (!r.ok) throw new Error('Controller unavailable. Reopen it with Launch.command.');
+      if (!r.ok) throw new Error('Controller unavailable. Start it with python3 server.py.');
       const state = await r.json();
       if (action || (!pendingActions && version === actionVersion)) render(state);
       if (action === 'connect' && state.connected && !state.error) {
@@ -154,6 +158,7 @@
         el('deck-picker').open = false;
         el('deck-picker').querySelector('summary').focus();
       }
+      if ((action === 'connect' || action === 'interval') && !state.error) syncUrl(state);
       return state;
     } catch (e) {
       if (!action && version !== actionVersion) return;
@@ -167,15 +172,37 @@
       }
     }
   }
+  function syncUrl(state) {
+    const url = new URL(location.href);
+    if (state.connected) url.searchParams.set('deck', state.deckUrl);
+    else url.searchParams.delete('deck');
+    url.searchParams.set('interval', String(state.interval));
+    history.replaceState(null, '', url);
+  }
   function act(action, payload) {
     actionVersion++;
     pendingActions++;
     actionQueue = actionQueue.then(() => request(action, payload)).finally(() => pendingActions--);
+    return actionQueue;
   }
   async function initialize() {
-    const state = await request();
-    const deck = new URLSearchParams(location.search).get('deck');
-    if (!state || !deck) return;
+    const params = new URLSearchParams(location.search);
+    const deck = params.get('deck');
+    const requestedInterval = params.get('interval');
+    let state = await request();
+    if (!state) return;
+    if (requestedInterval !== null) {
+      const seconds = Number(requestedInterval);
+      if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) {
+        el('error').textContent = 'Choose a whole number from 1 to 3600 seconds.';
+        return;
+      }
+      if (state.interval !== seconds) {
+        state = await act('interval', {interval: seconds});
+        if (!state || state.error) return;
+      }
+    }
+    if (!deck) return;
     el('deck-link').value = deck;
     let playerUrl;
     try {
@@ -198,6 +225,15 @@
     event.preventDefault();
     act('interval', {interval: el('interval').valueAsNumber});
   };
+  document.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', ' '].includes(event.key)) return;
+    if (!connected || pendingActions || event.defaultPrevented || event.repeat || event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.target instanceof Element && (event.target.isContentEditable || event.target.closest('input, textarea, select'))) return;
+    if (event.key === ' ' && event.target instanceof Element && event.target.closest('button, summary, a[href]')) return;
+    event.preventDefault();
+    act(event.key === ' ' ? (running ? 'pause' : 'resume') : event.key === 'ArrowLeft' ? 'previous' : 'next');
+  });
   initialize();
   requestAnimationFrame(animate);
   setInterval(() => request(), 1000);
