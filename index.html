@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Auto Advance</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #08090a; --panel: #0f1011; --control: #1c1c1f; --hover: #232326;
+    --border: #23252a; --border-control: #34343a; --text: #f7f8f8; --secondary: #d0d6e0; --muted: #8a8f98; --accent: #5e6ad2;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg); color: var(--text); font-size: 16px; -webkit-font-smoothing: antialiased;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; }
+  main { max-width: 28rem; margin: auto; }
+  header { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; padding: .5rem 0 1.25rem; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 1rem; margin: 0; color: var(--text); font-weight: 590; }
+  p { color: var(--secondary); font-size: .8125rem; line-height: 1.5; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin: 1.25rem 0; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; font-size: .8125rem; }
+  #slide { color: var(--secondary); }
+  #time { font-size: clamp(4rem, 19vw, 6rem); font-variant-numeric: tabular-nums; letter-spacing: -.065em; line-height: 1.2; font-weight: 510; text-align: center; padding: 1.25rem 0 1.5rem; }
+  #state { color: var(--secondary); background: var(--control); border: 1px solid var(--border); border-radius: 4px; padding: .2rem .45rem; font-size: .75rem; }
+  #finish { color: var(--muted); margin-top: 1rem; font-size: .75rem; font-variant-numeric: tabular-nums; line-height: 1.5; text-align: center; }
+  progress { appearance: none; border: 0; width: 100%; height: 4px; background: var(--border); border-radius: 4px; display: block; overflow: hidden; }
+  progress::-webkit-progress-bar { background: var(--border); border-radius: 4px; }
+  progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+  progress::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
+  button { font: inherit; font-size: .8125rem; font-weight: 510; border: 1px solid var(--border-control); border-radius: 6px; padding: .6rem .75rem; background: var(--control); color: var(--text); cursor: pointer; min-height: 2.25rem; box-shadow: 0 1px 2px #0003; }
+  button:hover { background: var(--hover); }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #8b94ed; outline-offset: 3px; }
+  button:disabled { opacity: .45; cursor: default; }
+  #toggle { width: 100%; background: var(--accent); border-color: var(--accent); color: #fff; min-height: 2.5rem; }
+  #toggle:hover { background: #5662c8; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+  .row button { flex: 1; }
+  #error { color: #ffb5b5; overflow-wrap: anywhere; }
+  #error:empty { display: none; }
+  details { margin-top: 1.25rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+  summary { color: var(--secondary); cursor: pointer; width: fit-content; padding: .25rem 0; font-size: .8125rem; }
+  label { display: block; margin: 1rem 0 .5rem; color: var(--secondary); font-size: .8125rem; }
+  input { width: 100%; min-width: 0; font: inherit; font-size: .8125rem; color: inherit; background: var(--panel); border: 1px solid var(--border-control); border-radius: 6px; padding: .65rem .75rem; }
+  input::placeholder { color: var(--muted); }
+  #interval-form { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 1rem 0; }
+  #interval-form label { flex: 1; margin: 0; }
+  #interval { width: 5.5rem; }
+</style>
+<main>
+  <header>
+    <h1>Auto Advance</h1>
+  </header>
+  <div class="card">
+    <div class="card-header">
+      <div id="slide">Connecting to Pitch…</div>
+      <div id="state" role="status">Ready</div>
+    </div>
+    <div id="time" role="timer" aria-label="Seconds remaining">20</div>
+    <progress id="progress" max="20" value="20" aria-label="Time remaining"></progress>
+    <div id="finish"></div>
+  </div>
+  <form id="interval-form">
+    <label for="interval">Seconds per slide</label>
+    <input id="interval" type="number" min="1" max="3600" step="1" value="20" required>
+    <button type="submit">Apply</button>
+  </form>
+  <button id="toggle" disabled>Start</button>
+  <div class="row"><button data-action="previous">← Previous</button><button data-action="next">Next →</button></div>
+  <div class="row"><button data-action="first">First slide</button></div>
+  <details id="deck-picker">
+    <summary>Change deck</summary>
+    <form id="deck-form">
+      <label for="deck-link">Pitch link</label>
+      <input id="deck-link" type="url" required placeholder="Paste a Pitch link" autocomplete="off" spellcheck="false">
+      <div class="row"><button id="connect" type="submit">Open deck</button></div>
+    </form>
+  </details>
+  <p id="error" role="alert"></p>
+</main>
+<script>
+  const token = '__TOKEN__';
+  let running = false, polling = false, pendingActions = 0;
+  let displayDeadline = 0, pausedRemaining = 20;
+  let interval = 20;
+  let actionVersion = 0, lastExpiryPoll = 0;
+  let actionQueue = Promise.resolve();
+  let initialized = false;
+  let connected = false, slide = 0, total = 0, finishDeadline = 0;
+  const timeFormat = new Intl.DateTimeFormat(undefined, {hour: 'numeric', minute: '2-digit', second: '2-digit'});
+  const el = id => document.getElementById(id);
+  function render(s) {
+    running = s.running;
+    connected = s.connected;
+    slide = s.slide || 0;
+    total = s.total || 0;
+    interval = s.interval;
+    if (el('interval').dataset.saved !== String(interval)) {
+      el('interval').value = interval;
+      el('interval').dataset.saved = String(interval);
+    }
+    el('progress').max = interval;
+    finishDeadline = s.deadlineMs + Math.max(0, total - slide) * interval * 1000;
+    el('slide').textContent = s.connected ? `Slide ${s.slide} of ${s.total}` : 'No deck connected';
+    if (!initialized) {
+      el('deck-link').value = s.deckUrl || '';
+      el('deck-picker').open = !s.connected;
+      initialized = true;
+    }
+    displayDeadline = performance.now() + Math.max(0, s.deadlineMs - Date.now());
+    pausedRemaining = s.remaining;
+    drawTime();
+    const stateLabel = !s.connected ? 'Choose a deck' : s.running ? 'Running' : s.remaining === 0 ? 'Finished' : 'Paused';
+    if (el('state').textContent !== stateLabel) el('state').textContent = stateLabel;
+    el('toggle').textContent = s.running ? 'Pause' : s.remaining > 0 && s.remaining < interval ? 'Resume' : 'Start';
+    el('error').textContent = s.error;
+    el('toggle').disabled = !s.connected;
+    document.querySelectorAll('[data-action]').forEach(b => b.disabled = !s.connected);
+    el('deck-picker').querySelector('summary').textContent = s.connected ? 'Change deck' : 'Choose deck';
+    if (!s.connected) el('deck-picker').open = true;
+  }
+  function drawTime() {
+    const remaining = running ? Math.max(0, (displayDeadline - performance.now()) / 1000) : pausedRemaining;
+    const seconds = String(Math.ceil(Math.min(interval, remaining)));
+    if (el('time').textContent !== seconds) el('time').textContent = seconds;
+    el('progress').value = remaining;
+    const finish = running ? finishDeadline : Date.now() + ((pausedRemaining > 0 ? pausedRemaining : interval) + Math.max(0, total - slide) * interval) * 1000;
+    const finishText = connected ? `${running ? 'Finishes at' : 'Start now, finish at'} ${timeFormat.format(new Date(Math.ceil(finish / 1000) * 1000))}` : '';
+    if (el('finish').textContent !== finishText) el('finish').textContent = finishText;
+    if (running && remaining === 0 && performance.now() - lastExpiryPoll > 250) {
+      lastExpiryPoll = performance.now();
+      request();
+    }
+  }
+  function animate() {
+    drawTime();
+    requestAnimationFrame(animate);
+  }
+  async function request(action, payload) {
+    if (!action && (polling || pendingActions)) return;
+    if (!action) polling = true;
+    const version = actionVersion;
+    if (action === 'connect') {
+      el('connect').disabled = true;
+      el('connect').textContent = 'Opening…';
+      el('error').textContent = '';
+    }
+    try {
+      const r = await fetch(action ? `/${action}` : '/state', { method: action ? 'POST' : 'GET', headers: {'X-Pitch-Token': token, 'Content-Type': 'application/json'}, body: payload ? JSON.stringify(payload) : undefined, signal: AbortSignal.timeout(action === 'connect' ? 45000 : 15000) });
+      if (!r.ok) throw new Error('Controller unavailable. Reopen it with Launch.command.');
+      const state = await r.json();
+      if (action || (!pendingActions && version === actionVersion)) render(state);
+      if (action === 'connect' && state.connected && !state.error) {
+        el('deck-link').value = state.deckUrl;
+        el('deck-picker').open = false;
+        el('deck-picker').querySelector('summary').focus();
+      }
+      return state;
+    } catch (e) {
+      if (!action && version !== actionVersion) return;
+      el('error').textContent = `Connection lost. The timer may still be running. ${e.message}`;
+      el('state').textContent = 'Disconnected';
+    } finally {
+      if (!action) polling = false;
+      if (action === 'connect') {
+        el('connect').disabled = false;
+        el('connect').textContent = 'Open deck';
+      }
+    }
+  }
+  function act(action, payload) {
+    actionVersion++;
+    pendingActions++;
+    actionQueue = actionQueue.then(() => request(action, payload)).finally(() => pendingActions--);
+  }
+  async function initialize() {
+    const state = await request();
+    const deck = new URLSearchParams(location.search).get('deck');
+    if (!state || !deck) return;
+    el('deck-link').value = deck;
+    let playerUrl;
+    try {
+      const url = new URL(deck);
+      playerUrl = url.origin + url.pathname.replace(/^\/app\/presentation\//, '/app/player/').replace(/\/$/, '');
+    } catch {
+      playerUrl = null;
+    }
+    if (!state.connected || state.deckUrl !== playerUrl) {
+      act('connect', {deck});
+    }
+  }
+  el('toggle').onclick = () => act(running ? 'pause' : 'resume');
+  document.querySelectorAll('[data-action]').forEach(b => b.onclick = () => act(b.dataset.action));
+  el('deck-form').onsubmit = event => {
+    event.preventDefault();
+    act('connect', {deck: el('deck-link').value});
+  };
+  el('interval-form').onsubmit = event => {
+    event.preventDefault();
+    act('interval', {interval: el('interval').valueAsNumber});
+  };
+  initialize();
+  requestAnimationFrame(animate);
+  setInterval(() => request(), 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) request(); });
+</script>
+</html>
